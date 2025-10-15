@@ -7,13 +7,27 @@ import java.util.StringJoiner;
 
 public final class CodeGenerator {
 
-    public static final class Field {
-        public final String type;
-        public final String name;
-        public Field(String type, String name) {
-            this.type = Objects.requireNonNull(type).trim();
-            this.name = Objects.requireNonNull(name).trim();
+    public record Field(String type, String name, String getter, String setter) {
+        public static Field of(String type, String name) {
+            boolean isBoolean = "boolean".equals(type) || "Boolean".equals(type);
+            String getter;
+            String setter;
+
+            if (isBoolean && isIsPrefix(name)) {
+                // field like "isMale" -> getter is "isMale()", setter "setMale(...)"
+                getter = name; // uses the field name as getter: isMale()
+                setter = "set" + capitalize(stripIsPrefix(name));
+            } else if (isBoolean) {
+                getter = "is" + capitalize(name);
+                setter = "set" + capitalize(name);
+            } else {
+                getter = "get" + capitalize(name);
+                setter = "set" + capitalize(name);
+            }
+            return new Field(type, name, getter, setter);
         }
+
+
     }
 
     /**
@@ -49,73 +63,76 @@ public final class CodeGenerator {
             if (kv.length != 2) {
                 throw new InvalidFieldFormatException("Each field must be 'type name' (separated by space). Problematic field: '" + rf + "'");
             }
-            fields.add(new Field(kv[0].trim(), kv[1].trim()));
+            fields.add(Field.of(kv[0].trim(), kv[1].trim()));
         }
 
         return buildSource(className, fields);
     }
 
     private static String buildSource(String className, List<Field> fields) {
-        StringBuilder sb = new StringBuilder();
-        String nl = System.lineSeparator();
+        StringBuilder builder = new StringBuilder();
+        String newLine = System.lineSeparator();
+        builder.append("""
+                import io.github.anjoismysign.holoworld.asset.IdentityDataAsset;
+                import io.github.anjoismysign.holoworld.asset.IdentityGenerator;
+                import org.jetbrains.annotations.NotNull;
+                """).append(newLine);
 
         // Record declaration: identifier first
-        sb.append("public record ").append(className).append("(String identifier");
+        builder.append("public record ").append(className).append("(String identifier");
         for (Field f : fields) {
-            sb.append(", ").append(f.type).append(" ").append(f.name);
+            builder.append(", ").append(f.type).append(" ").append(f.name);
         }
-        sb.append(") implements DataAsset {").append(nl).append(nl);
+        builder.append(") implements IdentityDataAsset<"+className+"> {").append(newLine).append(newLine);
 
-        sb.append("    public static class Info implements IdentityGenerator<").append(className).append("> {").append(nl);
-        // private fields
-        for (Field f : fields) {
-            sb.append("        private ").append(f.type).append(" ").append(f.name).append(";").append(nl);
+        builder.append("    @Override").append(newLine);
+        builder.append("    @NotNull").append(newLine);
+        builder.append("    public IdentityGenerator<").append(className).append("> generator(){").append(newLine);
+        builder.append("        Info info = new Info();").append(newLine);
+        for (Field field : fields) {
+            builder.append("        info.").append(field.setter).append("(").append(field.name).append(");").append(newLine);
         }
-        if (!fields.isEmpty()) sb.append(nl);
+        builder.append("        return info;").append(newLine);
+        builder.append("    }").append(newLine).append(newLine);
+
+
+        builder.append("    public static class Info implements IdentityGenerator<").append(className).append("> {").append(newLine);
+        // private fields
+        for (Field field : fields) {
+            builder.append("        private ").append(field.type).append(" ").append(field.name).append(";").append(newLine);
+        }
+        if (!fields.isEmpty()) builder.append(newLine);
 
         // generate method
-        sb.append("        @Override").append(nl);
-        sb.append("        public ").append(className).append(" generate(String identifier) {").append(nl);
-        sb.append("            return new ").append(className).append("(identifier");
-        for (Field f : fields) {
-            sb.append(", ").append(f.name);
+        builder.append("        @Override").append(newLine);
+        builder.append("        public ").append(className).append(" generate(String identifier){").append(newLine);
+        builder.append("            return new ").append(className).append("(identifier");
+        for (Field field : fields) {
+            builder.append(", ").append(field.name);
         }
-        sb.append(");").append(nl);
-        sb.append("        }").append(nl).append(nl);
+        builder.append(");").append(newLine);
+        builder.append("        }").append(newLine).append(newLine);
 
         // getters & setters
-        for (Field f : fields) {
-            boolean isBoolean = "boolean".equals(f.type) || "Boolean".equals(f.type);
-            String getterName;
-            String setterName;
-
-            if (isBoolean && isIsPrefix(f.name)) {
-                // field like "isMale" -> getter is "isMale()", setter "setMale(...)"
-                getterName = f.name; // uses the field name as getter: isMale()
-                setterName = "set" + capitalize(stripIsPrefix(f.name));
-            } else if (isBoolean) {
-                getterName = "is" + capitalize(f.name);
-                setterName = "set" + capitalize(f.name);
-            } else {
-                getterName = "get" + capitalize(f.name);
-                setterName = "set" + capitalize(f.name);
-            }
+        for (Field field : fields) {
+            String getter = field.getter();
+            String setter = field.setter();
 
             // Getter
-            sb.append("        public ").append(f.type).append(" ").append(getterName).append("() {").append(nl);
-            sb.append("            return ").append(f.name).append(";").append(nl);
-            sb.append("        }").append(nl).append(nl);
+            builder.append("        public ").append(field.type).append(" ").append(getter).append("() {").append(newLine);
+            builder.append("            return ").append(field.name).append(";").append(newLine);
+            builder.append("        }").append(newLine).append(newLine);
 
             // Setter
-            sb.append("        public void ").append(setterName).append("(").append(f.type).append(" ").append(f.name).append(") {").append(nl);
-            sb.append("            this.").append(f.name).append(" = ").append(f.name).append(";").append(nl);
-            sb.append("        }").append(nl).append(nl);
+            builder.append("        public void ").append(setter).append("(").append(field.type).append(" ").append(field.name).append(") {").append(newLine);
+            builder.append("            this.").append(field.name).append(" = ").append(field.name).append(";").append(newLine);
+            builder.append("        }").append(newLine).append(newLine);
         }
 
-        sb.append("    }").append(nl).append(nl);
-        sb.append("}").append(nl);
+        builder.append("    }").append(newLine).append(newLine);
+        builder.append("}").append(newLine);
 
-        return sb.toString();
+        return builder.toString();
     }
 
     private static boolean isIsPrefix(String name) {
